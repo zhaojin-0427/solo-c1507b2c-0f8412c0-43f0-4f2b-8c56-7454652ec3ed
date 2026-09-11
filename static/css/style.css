@@ -82,7 +82,8 @@ label { font-size: 11px; color: var(--dim); display: flex; flex-direction: colum
 .el-node .body { min-width: 0; }
 .el-node .title { font-size: 12px; font-weight: 600; }
 .el-node .uid { color: var(--dim); font-size: 10px; font-family: var(--mono); }
-.el-node .valrow { display: flex; gap: 6px; align-items: center; margin-top: 3px; }
+.el-node .valrow { display: flex; gap: 6px; align-items: center; margin-top: 3px; flex-wrap: wrap; }
+.el-node .valrow input.val { flex: 0 0 auto; }
 .el-node input.val { width: 90px; }
 .el-node select.term { width: 70px; }
 .el-node .disp { color: var(--green); font-family: var(--mono); font-size: 11px; }
@@ -94,9 +95,19 @@ label { font-size: 11px; color: var(--dim); display: flex; flex-direction: colum
 .el-node .drag-pos {
   cursor: grab; user-select: none; padding: 2px 6px; border: 1px solid var(--border);
   border-radius: 4px; font-size: 10px; color: #c792ea; background: #211a2e;
+  white-space: nowrap;
 }
 .el-node .drag-pos.disabled { opacity: .35; cursor: not-allowed; }
 .el-node.mainline { border-style: dashed; border-color: #3b82f688; }
+.el-node.mainline.locked { border-style: dashed; border-color: #d4b23a; }
+#cardFeed.locked-card { border-color: #8a7d2f; background: #26241c; }
+#cardFeed.locked-card input { opacity: .55; }
+.sidebtn { cursor: pointer; font-size: 11px; padding: 1px 4px; border: 1px solid var(--border);
+  border-radius: 4px; color: #c792ea; background: #211a2e; }
+.sidebtn:hover { border-color: #c792ea; }
+.zone-tag { font-size: 9.5px; padding: 0 4px; border-radius: 3px; margin-right: 4px; vertical-align: 1px; }
+.zone-tag.z-before { background: #14331f; color: #7ee787; }
+.zone-tag.z-after { background: #2c1e33; color: #c792ea; }
 .el-node .lockbtn { cursor: pointer; opacity: .7; font-size: 13px; }
 .el-node .lockbtn.on { opacity: 1; }
 .el-node .delbtn { cursor: pointer; color: #f2a0a0; font-size: 13px; }

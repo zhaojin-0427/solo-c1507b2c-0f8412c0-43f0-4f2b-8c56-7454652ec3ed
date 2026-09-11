@@ -77,6 +77,27 @@
     };
   }
 
+  // 统一后端 POST: 任何非 JSON / 非 200 / 网络错误都抛带中文说明的 Error
+  async function apiPost(path, payload) {
+    let resp, text;
+    try {
+      resp = await fetch(path, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      text = await resp.text();
+    } catch (e) {
+      throw new Error('无法连接计算服务: ' + e.message);
+    }
+    let data = null;
+    try { data = text ? JSON.parse(text) : {}; } catch (e) { /* HTML 错误页 */ }
+    if (!resp.ok || !data) {
+      throw new Error(`服务错误 ${resp.status}: ${(data && data.error) ? data.error : '计算失败, 请检查输入'}`);
+    }
+    if (data.error) throw new Error(data.error);
+    return data;
+  }
+
   // ------------------------------------------------------------ 重算管线
   let recomputeQueued = false;
   function scheduleRecompute() {
@@ -152,29 +173,30 @@
   }
 
   // ------------------------------------------------------------ 变换追溯
-  async function showTrace(fHz) {
+  function showTrace(fHz) {
     state.pickF = fHz;
     $('#traceInfo').textContent = `@ ${(fHz / 1e6).toFixed(4)} MHz`;
-    try {
-      const resp = await fetch('/api/trace', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(cfgPayload({ f: fHz / 1e6 })),
-      });
-      const data = await resp.json();
-      if (data.error) return;
-      state.traceSteps = data.steps;
-      const box = $('#traceBox');
-      box.innerHTML = data.steps.map((s, k) => {
-        const name = k === 0 ? '负载' : elName(s.element);
-        return `<div class="trace-step ${k === data.steps.length - 1 ? 'hot' : ''}">
-          <div class="idx">${k}</div>
-          <div><span class="zval"><b>${zfmt(s.r, s.x)}</b></span>
-          <span class="tags">${name} · Γ=${(s.g_re).toFixed(3)}${s.g_im >= 0 ? '+' : ''}${s.g_im.toFixed(3)}j · VSWR ${s.vswr.toFixed(2)} · RL ${s.rl.toFixed(1)}dB</span></div>
-        </div>`;
-      }).join('');
-      renderSmith(state.currentEval.rows);
-      renderCharts(state.currentEval.rows);
-    } catch (e) { /* 离线时忽略 */ }
+    if (!state.samples.length) return;
+    // 与图表完全同源: 本地 RF 引擎逐段变换, 保证阻抗/驻波一致
+    const zl = RF.loadAt(state.samples, fHz);
+    const steps = RF.chainInput(zl, effectiveChain(), fHz, true);
+    const z0 = state.cfg.z0;
+    state.traceSteps = steps.map(s => {
+      const m = RF.metrics(s.z, z0);
+      return { r: s.z.r, x: s.z.i, element: s.el, g_re: m.gamma.r, g_im: m.gamma.i,
+               vswr: m.vswr, rl: m.rl };
+    });
+    const box = $('#traceBox');
+    box.innerHTML = state.traceSteps.map((s, k) => {
+      const name = k === 0 ? '负载' : elName(s.element);
+      return `<div class="trace-step ${k === state.traceSteps.length - 1 ? 'hot' : ''}">
+        <div class="idx">${k}</div>
+        <div><span class="zval"><b>${zfmt(s.r, s.x)}</b></span>
+        <span class="tags">${name} · Γ=${s.g_re.toFixed(3)}${s.g_im >= 0 ? '+' : ''}${s.g_im.toFixed(3)}j · VSWR ${s.vswr.toFixed(2)} · RL ${s.rl.toFixed(1)}dB</span></div>
+      </div>`;
+    }).join('');
+    renderSmith(state.currentEval.rows);
+    renderCharts(state.currentEval.rows);
   }
 
   function elName(el) {
@@ -275,20 +297,23 @@
     box.querySelectorAll('.el-node').forEach(node => {
       const uidv = node.dataset.uid;
       const el = findEl(uidv);
-      if (!el) return;
+      const isMain = uidv === MAINLINE_UID;
       node.querySelector('[data-act="lock"]')?.addEventListener('click', () => {
         state.locks.has(uidv) ? state.locks.delete(uidv) : state.locks.add(uidv);
+        if (isMain) syncFeedForm();
         renderChain();
       });
       node.querySelector('[data-act="side"]')?.addEventListener('click', () => {
+        if (!el) return;
         el.place = el.place === 'before' ? 'after' : 'before';
         afterChainChange();
       });
       node.querySelector('[data-act="del"]')?.addEventListener('click', () => deleteEl(uidv));
       node.addEventListener('contextmenu', ev => {
         ev.preventDefault();
-        if (uidv !== MAINLINE_UID) deleteEl(uidv);
+        if (!isMain) deleteEl(uidv);
       });
+      if (!el || isMain) return;   // 主馈线无值编辑, 以下仅针对用户元件
       node.querySelectorAll('input.val').forEach(inp => {
         inp.addEventListener('change', () => {
           const v = parseFloat(inp.value);
@@ -394,12 +419,13 @@
     if (!state.samples.length) { state.samples = RF.parseSamples(state.samplesText); }
     if (!state.samples.length) { alert('请先粘贴有效采样'); return; }
     $('#solveInfo').textContent = '求解中…';
-    const resp = await fetch('/api/solve', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(cfgPayload()),
-    });
-    const data = await resp.json();
-    if (data.error) { $('#solveInfo').textContent = data.error; return; }
+    let data;
+    try {
+      data = await apiPost('/api/solve', cfgPayload());
+    } catch (e) {
+      $('#solveInfo').textContent = '✗ ' + e.message;
+      return;
+    }
     state.candidates = data.candidates;
     state.overlays = new Set();
     state.activeCand = null;
@@ -469,17 +495,15 @@
       ? state.candidates.find(c => c.id === state.activeCand) : null;
     const chain = target ? target.chain : effectiveChain();
     $('#mcInfo').textContent = '抽样中…';
-    const resp = await fetch('/api/montecarlo', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(cfgPayload({
+    let mc;
+    try {
+      mc = await apiPost('/api/montecarlo', cfgPayload({
         candidate_chain: chain,
         locks: [...state.locks],
         seed: +$('#mcSeed').value, n: +$('#mcN').value,
         tol: (+$('#mcTol').value) / 100, len_tol: (+$('#mcLenTol').value) / 100,
-      })),
-    });
-    const mc = await resp.json();
-    if (mc.error) { $('#mcInfo').textContent = mc.error; return; }
+      }));
+    } catch (e) { $('#mcInfo').textContent = '✗ ' + e.message; return; }
     $('#mcInfo').textContent = '';
     const ycls = mc.yield >= 0.9 ? 'pass-ok' : (mc.yield >= 0.6 ? '' : 'pass-bad');
     $('#mcTable').innerHTML = `<table>
@@ -600,6 +624,11 @@
     $('#feedLoss').value = state.feed.loss;
     $('#feedLossF').value = state.feed.lossf;
     $('#feedEnabled').checked = state.feedEnabled;
+    // 主馈线锁定后禁止编辑参数
+    const locked = state.locks.has(MAINLINE_UID);
+    ['feedZ0', 'feedLen', 'feedVf', 'feedLoss', 'feedLossF'].forEach(id =>
+      ($('#' + id).disabled = locked));
+    $('#cardFeed').classList.toggle('locked-card', locked);
   }
 
   function syncAllForms() {

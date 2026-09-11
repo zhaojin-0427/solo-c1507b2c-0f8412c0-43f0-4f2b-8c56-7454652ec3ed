@@ -45,7 +45,7 @@ def metrics(zin, z0):
         "gamma": g,
         "s11": mag,
         "vswr": vswr_of(mag),
-        "rl": -dbg(mag) if mag > 1e-12 else 120.0,
+        "rl": min(-dbg(mag), 100.0) if mag > 1e-10 else 100.0,
     }
 
 
@@ -57,7 +57,8 @@ def line_gamma(el, f):
     beta = TWO_PI * f / (vf * C0)
     loss_db100 = float(el.get("loss", 0.0))
     lossf = max(float(el.get("lossf", f)), 1e3)
-    alpha = loss_db100 * math.log(10.0) / 868.58896  # Np/m @ lossf
+    # dB/100m -> Np/m: 1 Np = 8.6858896 dB (振幅), 故 alpha = loss*ln10/2000
+    alpha = loss_db100 * math.log(10.0) / 2000.0  # Np/m @ lossf
     alpha *= math.sqrt(max(f / lossf, 1e-9))
     return complex(alpha, beta), beta, alpha, float(el["z0"])
 
@@ -135,7 +136,7 @@ def load_at(samples, f):
 def sweep_range(cfg):
     f1 = cfg["band"][0] * 1e6
     f2 = cfg["band"][1] * 1e6
-    fs = [row[0] * 1e6 for row in cfg["samples"]]
+    fs = [row[0] for row in cfg["samples"]]  # samples 已经是 Hz
     if fs:
         f1 = min(f1, min(fs))
         f2 = max(f2, max(fs))
@@ -277,7 +278,7 @@ def _assemble(cfg, matcher, matcher_at):
     """拼成完整链 (负载 -> 源)。
     plane=load: 天线端匹配, 网络在主馈线之前。
     plane=source: 发射机端匹配, 网络在主馈线之后。"""
-    ml = copy.deepcopy(cfg["mainline"]) if cfg.get("mainline") else []
+    ml = [copy.deepcopy(cfg["mainline"])] if cfg.get("mainline") else []
     m = copy.deepcopy(matcher)
     before, after = _split_chain(cfg)
     if cfg.get("plane", "load") == "load":

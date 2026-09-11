@@ -84,7 +84,7 @@ const RF = (() => {
     return {
       gamma: g, s11: mag,
       vswr: (1 + m) / (1 - m),
-      rl: mag > 1e-12 ? -20 * Math.log10(Math.max(mag, 1e-12)) : 120,
+      rl: mag > 1e-10 ? Math.min(-20 * Math.log10(Math.max(mag, 1e-12)), 100) : 100,
     };
   }
 
