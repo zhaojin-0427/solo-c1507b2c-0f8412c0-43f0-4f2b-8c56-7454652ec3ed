@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>射频匹配推演台 · RF Match Lab</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">📡 射频匹配推演台 <span class="sub">馈线 / 支节 / L 型网络 · 史密斯图同步推演</span></div>
+  <div class="top-actions">
+    <select id="projectSel" title="已保存项目"><option value="">— 选择项目 —</option></select>
+    <button id="btnSaveProject" class="btn">💾 保存项目</button>
+    <button id="btnSaveVersion" class="btn btn-ghost">⑂ 存版本</button>
+    <button id="btnVersions" class="btn btn-ghost">历史版本</button>
+    <button id="btnDeleteProject" class="btn btn-danger-ghost">删除</button>
+  </div>
+</header>
+
+<main class="layout">
+  <!-- 左栏 -->
+  <section class="col col-left">
+    <div class="card" id="cardSamples">
+      <h3>负载采样 <span class="hint">每行: 频率MHz 电阻Ω 电抗Ω (逗号/空格分隔)</span></h3>
+      <textarea id="samplesText" rows="6" spellcheck="false"></textarea>
+      <div class="row-between">
+        <button id="btnParse" class="btn btn-small">解析并重算</button>
+        <span id="samplesInfo" class="hint"></span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>系统与求解设置</h3>
+      <div class="grid2">
+        <label>系统阻抗 Z₀ (Ω) <input type="number" id="sysZ0" value="50" step="1" min="1"></label>
+        <label>驻波比上限 <input type="number" id="vswrLimit" value="1.5" step="0.1" min="1"></label>
+        <label>频段起 (MHz) <input type="number" id="bandLo" value="14.0" step="0.01"></label>
+        <label>频段止 (MHz) <input type="number" id="bandHi" value="14.4" step="0.01"></label>
+        <label>E 系列 <select id="eseries">
+          <option>E6</option><option>E12</option><option selected>E24</option><option>E96</option>
+        </select></label>
+        <label>参考面 <select id="plane">
+          <option value="load">负载端 (天线)</option>
+          <option value="source">源端 (过馈线后)</option>
+        </select></label>
+      </div>
+    </div>
+
+    <div class="card" id="cardFeed">
+      <h3>主馈线 <label class="switch"><input type="checkbox" id="feedEnabled" checked> 启用</label></h3>
+      <div class="grid2">
+        <label>特性阻抗 (Ω) <input type="number" id="feedZ0" value="50" step="1" min="1"></label>
+        <label>长度 (m) <input type="number" id="feedLen" value="12.0" step="0.1" min="0"></label>
+        <label>速度因子 <input type="number" id="feedVf" value="0.66" step="0.01" min="0.05" max="1"></label>
+        <label>损耗 dB/100m <input type="number" id="feedLoss" value="1.2" step="0.1" min="0"></label>
+        <label>损耗参考频率 (MHz) <input type="number" id="feedLossF" value="10" step="0.1"></label>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>链式编辑器 <span class="hint">负载 → 源, 横向拖数值 · 右键删除 · 支节可拖动位置</span></h3>
+      <div class="chain-toolbar">
+        <button class="btn btn-small" data-add="Lser">+串L</button>
+        <button class="btn btn-small" data-add="Cser">+串C</button>
+        <button class="btn btn-small" data-add="Lpar">+并L</button>
+        <button class="btn btn-small" data-add="Cpar">+并C</button>
+        <button class="btn btn-small" data-add="line">+线段</button>
+        <button class="btn btn-small" data-add="shortStub">+短支</button>
+        <button class="btn btn-small" data-add="openStub">+开支</button>
+        <button id="btnClearChain" class="btn btn-small btn-danger-ghost">清空元件</button>
+      </div>
+      <div id="chainBox" class="chain-box"></div>
+    </div>
+
+    <div class="card">
+      <h3>方案搜索</h3>
+      <div class="row-between">
+        <button id="btnSolve" class="btn btn-primary">🔍 搜索 L 型网络 / 单支节</button>
+        <span id="solveInfo" class="hint"></span>
+      </div>
+      <div id="candidateBox" class="candidate-box"></div>
+    </div>
+
+    <div class="card">
+      <h3>容差抽样 (固定种子)</h3>
+      <div class="grid2">
+        <label>种子 <input type="number" id="mcSeed" value="1" step="1"></label>
+        <label>抽样数 <input type="number" id="mcN" value="500" step="100" min="50" max="5000"></label>
+        <label>元件容差 ±% <input type="number" id="mcTol" value="5" step="0.5" min="0" max="50"></label>
+        <label>线段/支节长度容差 ±% <input type="number" id="mcLenTol" value="2" step="0.5" min="0" max="50"></label>
+      </div>
+      <div class="row-between">
+        <button id="btnMC" class="btn btn-small">对当前方案运行抽样</button>
+        <span id="mcInfo" class="hint"></span>
+      </div>
+      <div id="mcTable" class="mc-table"></div>
+    </div>
+  </section>
+
+  <!-- 中栏 史密斯 -->
+  <section class="col col-mid">
+    <div class="card smith-card">
+      <h3>史密斯圆图 <span id="smithReadout" class="hint"></span></h3>
+      <canvas id="smithCanvas" width="560" height="560"></canvas>
+      <div class="legend">
+        <span><i style="background:#4fa3ff"></i>当前链</span>
+        <span><i style="background:#ffd166"></i>基线</span>
+        <span><i style="background:#ff6b9d"></i>候选叠加</span>
+        <span><i style="background:#7ee787"></i>选中频点</span>
+      </div>
+    </div>
+    <div class="card">
+      <h3>变换追溯 <span id="traceInfo" class="hint"></span></h3>
+      <div id="traceBox" class="trace-box">
+        <div class="hint">在右侧扫频曲线上点选频点, 或在史密斯图上点击, 查看该频点逐段变换。</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 右栏 扫频 -->
+  <section class="col col-right">
+    <div class="card charts-card">
+      <h3>扫频曲线</h3>
+      <canvas id="chartVswr"></canvas>
+      <canvas id="chartRl"></canvas>
+      <canvas id="chartS11"></canvas>
+      <canvas id="chartZ"></canvas>
+      <div class="legend">
+        <span><i style="background:#4fa3ff"></i>当前链</span>
+        <span><i style="background:#ffd166"></i>基线</span>
+        <span><i style="background:#ff6b9d"></i>候选</span>
+        <span><i style="background:#7ee787"></i>选点</span>
+        <span id="chartStats" class="hint"></span>
+      </div>
+    </div>
+    <div class="card">
+      <h3>异常频点</h3>
+      <div id="anomalyBox" class="anomaly-box"></div>
+    </div>
+  </section>
+</main>
+
+<div id="modalMask" class="modal-mask hidden">
+  <div class="modal">
+    <h3 id="modalTitle">历史版本</h3>
+    <div id="modalBody"></div>
+    <div class="modal-foot">
+      <button id="modalClose" class="btn btn-small">关闭</button>
+    </div>
+  </div>
+</div>
+
+<script src="/static/js/rf.js"></script>
+<script src="/static/js/smith.js"></script>
+<script src="/static/js/charts.js"></script>
+<script src="/static/js/app.js"></script>
+</body>
+</html>
