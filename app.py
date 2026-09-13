@@ -3,6 +3,7 @@ import os
 import sys
 import json
 import copy
+import math
 import sqlite3
 import time
 import uuid
@@ -93,17 +94,45 @@ def parse_samples(text):
     return dedup
 
 
+def _opt_num(v):
+    """可选数值: 空/非法 → None (视为未设置)。"""
+    if v is None or v == "":
+        return None
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if math.isfinite(f) else None
+
+
+def _num_or(v, default):
+    n = _opt_num(v)
+    return default if n is None else n
+
+
+def _feed_ratings(feed_in):
+    out = {}
+    for key in ("vmax", "imax", "pmax"):
+        v = _opt_num(feed_in.get(key))
+        if v is not None and v > 0:
+            out[key] = v
+    return out
+
+
 def normalize_cfg(payload):
     feed_in = payload.get("feed") or {}
     band = payload.get("band") or [7.0, 7.3]
     flen = float(feed_in.get("length", 0.0))
+    feed_rt = _feed_ratings(feed_in)
     mainline = None
     if payload.get("feed_enabled", True) and flen > 0:
         mainline = {"kind": "line", "uid": "mainline", "main": True,
                     "z0": float(feed_in.get("z0", 50.0)), "length": flen,
                     "vf": float(feed_in.get("vf", 0.66)),
                     "loss": float(feed_in.get("loss", 0.0)),
-                    "lossf": float(feed_in.get("lossf", 10.0)) * 1e6}
+                    "lossf": float(feed_in.get("lossf", 10.0)) * 1e6,
+                    **feed_rt}
+    power_in = payload.get("power") or {}
     cfg = {
         "z0": float(payload.get("z0", 50.0)),
         "band": [float(band[0]), float(band[1])],
@@ -121,7 +150,15 @@ def normalize_cfg(payload):
             "vf": float(feed_in.get("vf", 0.66)),
             "loss": float(feed_in.get("loss", 0.0)),
             "lossf": float(feed_in.get("lossf", 10.0)) * 1e6,
+            **feed_rt,
         },
+        # 发射功率 / 峰均比 / 占空比 → 器件应力校核
+        "power": {
+            "p_w": max(_num_or(power_in.get("p_w"), 100.0), 0.0),
+            "par_db": max(_num_or(power_in.get("par_db"), 0.0), 0.0),
+            "duty": min(max(_num_or(power_in.get("duty"), 1.0), 0.0), 1.0),
+        },
+        "min_margin": min(max(_num_or(payload.get("min_margin"), 0.2), 0.0), 0.95),
     }
     return cfg
 
@@ -133,10 +170,18 @@ def _clean_chain(chain):
         el = {"kind": k, "uid": e.get("uid") or str(uuid.uuid4())[:8]}
         if k in ("Lser", "Cser", "Lpar", "Cpar"):
             el["value"] = float(e["value"])
+            for key in ("q", "vmax", "imax", "pmax"):   # Q 值 / 耐压 / 额定电流 / 热功率
+                v = _opt_num(e.get(key))
+                if v is not None and v > 0:
+                    el[key] = v
         elif k in ("line", "stub"):
             el.update(z0=float(e.get("z0", 50.0)), length=float(e.get("length", 0.0)),
                       vf=float(e.get("vf", 0.66)), loss=float(e.get("loss", 0.0)),
                       lossf=float(e.get("lossf", 10e6)))
+            for key in ("vmax", "imax", "pmax"):        # 最大电压 / 电流 / 耗散限制
+                v = _opt_num(e.get(key))
+                if v is not None and v > 0:
+                    el[key] = v
             if k == "line" and e.get("main"):
                 el["main"] = True
             if k == "stub":
@@ -210,10 +255,10 @@ def api_solve():
         return jsonify({"error": "未解析到有效的采样"}), 400
     if cfg["band"][1] <= cfg["band"][0]:
         return jsonify({"error": "目标频段无效"}), 400
-    cands = rf.solve(cfg)
-    for c in cands:
+    res = rf.solve(cfg)
+    for c in res["candidates"]:
         c["rows"] = rows_json(c["rows"])
-    return jsonify({"candidates": cands})
+    return jsonify({"candidates": res["candidates"], "excluded": res["excluded"]})
 
 
 @app.post("/api/montecarlo")

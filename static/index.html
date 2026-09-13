@@ -48,6 +48,17 @@
       </div>
     </div>
 
+    <div class="card" id="cardPower">
+      <h3>发射功率与应力校核 <span class="hint">额定值留空 = 只计算不判超限</span></h3>
+      <div class="grid2">
+        <label>发射功率 (W) <input type="number" id="pwrW" value="100" step="10" min="0"></label>
+        <label>峰均比 PAR (dB) <input type="number" id="pwrPar" value="0" step="0.5" min="0"></label>
+        <label>占空比 (%) <input type="number" id="pwrDuty" value="100" step="5" min="0" max="100"></label>
+        <label>最小安全裕量 (%) <input type="number" id="minMargin" value="20" step="5" min="0" max="90"></label>
+      </div>
+      <div id="stressSummary" class="stress-summary hint"></div>
+    </div>
+
     <div class="card" id="cardFeed">
       <h3>主馈线 <label class="switch"><input type="checkbox" id="feedEnabled" checked> 启用</label></h3>
       <div class="grid2">
@@ -56,6 +67,9 @@
         <label>速度因子 <input type="number" id="feedVf" value="0.66" step="0.01" min="0.05" max="1"></label>
         <label>损耗 dB/100m <input type="number" id="feedLoss" value="1.2" step="0.1" min="0"></label>
         <label>损耗参考频率 (MHz) <input type="number" id="feedLossF" value="10" step="0.1"></label>
+        <label>耐压 (V) <input type="number" id="feedVmax" step="10" min="0" placeholder="留空不判"></label>
+        <label>电流 (A) <input type="number" id="feedImax" step="0.5" min="0" placeholder="留空不判"></label>
+        <label>耗散 (W) <input type="number" id="feedPmax" step="1" min="0" placeholder="留空不判"></label>
       </div>
     </div>
 
@@ -71,6 +85,7 @@
         <button class="btn btn-small" data-add="openStub">+开支</button>
         <button id="btnClearChain" class="btn btn-small btn-danger-ghost">清空元件</button>
       </div>
+      <div id="chainStressInfo" class="chain-stress-info"></div>
       <div id="chainBox" class="chain-box"></div>
     </div>
 
@@ -133,6 +148,17 @@
         <span><i style="background:#ff6b9d"></i>候选</span>
         <span><i style="background:#7ee787"></i>选点</span>
         <span id="chartStats" class="hint"></span>
+      </div>
+    </div>
+    <div class="card stress-card">
+      <h3>器件应力与送达功率 <span class="hint">利用率 = 应力/额定 · 点击与其余图表联动选点</span></h3>
+      <canvas id="chartStress"></canvas>
+      <div class="legend" id="stressLegend"></div>
+      <canvas id="chartPower"></canvas>
+      <div class="legend">
+        <span><i style="background:#7ee787"></i>负载平均</span>
+        <span><i style="background:#ffd166"></i>负载峰值包络</span>
+        <span><i style="background:#ff9e64"></i>链损耗(平均)</span>
       </div>
     </div>
     <div class="card">

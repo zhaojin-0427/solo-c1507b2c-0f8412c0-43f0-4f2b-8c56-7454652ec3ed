@@ -12,6 +12,13 @@ const RF = (() => {
   };
   const cneg = a => ({ r: -a.r, i: -a.i });
   const cabs = a => Math.hypot(a.r, a.i);
+  const cconj = a => ({ r: a.r, i: -a.i });
+  const cexp = z => {
+    const e = Math.exp(z.r);
+    return { r: e * Math.cos(z.i), i: e * Math.sin(z.i) };
+  };
+  const ccosh = z => ({ r: Math.cosh(z.r) * Math.cos(z.i), i: Math.sinh(z.r) * Math.sin(z.i) });
+  const csinh = z => ({ r: Math.sinh(z.r) * Math.cos(z.i), i: Math.cosh(z.r) * Math.sin(z.i) });
   const ctanh = z => {
     // tanh(z) = sinh/cosh; 用 tanh(x+iy) 公式避免大数溢出
     const x = z.r, y = z.i;
@@ -86,6 +93,147 @@ const RF = (() => {
       vswr: (1 + m) / (1 - m),
       rl: mag > 1e-10 ? Math.min(-20 * Math.log10(Math.max(mag, 1e-12)), 100) : 100,
     };
+  }
+
+  // ---- 器件应力 (与 rf.py 同构): 1W 可用功率下逐段 V/I/损耗, 显示时按功率级缩放
+  function elAbcd(el, f) {
+    const w = TAU * f;
+    const one = CR1, zero = { r: 0, i: 0 };
+    switch (el.kind) {
+      case 'Lser': case 'Cser': {
+        const x = el.kind === 'Lser' ? w * el.value : -1 / (w * el.value);
+        const q = el.q;
+        return { a: one, b: { r: q ? Math.abs(x) / q : 0, i: x }, c: zero, d: one };
+      }
+      case 'Lpar': case 'Cpar': {
+        const x = el.kind === 'Lpar' ? w * el.value : -1 / (w * el.value);
+        const q = el.q;
+        return { a: one, b: zero, c: { r: q ? 1 / (q * Math.abs(x)) : 0, i: -1 / x }, d: one };
+      }
+      case 'line': {
+        const { g } = lineGamma(el, f);
+        const gl = cmul(g, { r: el.length, i: 0 });
+        const ch = ccosh(gl), sh = csinh(gl);
+        const z0 = { r: el.z0, i: 0 };
+        return { a: ch, b: cmul(z0, sh), c: cdiv(sh, z0), d: ch };
+      }
+      case 'stub':
+        return { a: one, b: zero, c: stubY(el, f), d: one };
+      default:
+        return { a: one, b: zero, c: zero, d: one };
+    }
+  }
+
+  // 已知源端 V/I, 求传输线(或支节)沿线 |V|max、|I|max; 峰值位置解析枚举, 含端点
+  function waveExtremes(v, i, el, f) {
+    const { g, beta } = lineGamma(el, f);
+    const L = el.length;
+    if (L <= 0 || beta <= 0) return [cabs(v), cabs(i)];
+    const z0 = { r: el.z0, i: 0 };
+    const h = { r: 0.5, i: 0 };
+    const A = cmul(h, csub(v, cmul(i, z0)));
+    const B = cmul(h, cadd(v, cmul(i, z0)));
+    const C = cmul(h, csub(i, cdiv(v, z0)));
+    const D = cmul(h, cadd(i, cdiv(v, z0)));
+    const ext = (p, q) => {
+      let best = cabs(cadd(p, q));                       // x = 0
+      const gl = cmul(g, { r: L, i: 0 });
+      best = Math.max(best, cabs(cadd(cmul(p, cexp(gl)), cmul(q, cexp(cneg(gl))))));  // x = L
+      const pq = cmul(p, cconj(q));
+      const phi = Math.atan2(pq.i, pq.r);
+      const kLo = Math.floor(phi / TAU) + 1;
+      const kHi = Math.floor((beta * L + phi / 2) / Math.PI);
+      for (let k = kLo; k <= kHi; k++) {
+        const x = (Math.PI * k - phi / 2) / beta;
+        if (x <= 0 || x >= L) continue;
+        const gx = cmul(g, { r: x, i: 0 });
+        best = Math.max(best, cabs(cadd(cmul(p, cexp(gx)), cmul(q, cexp(cneg(gx))))));
+      }
+      return best;
+    };
+    return [ext(A, B), ext(C, D)];
+  }
+
+  function stressAt(chain, zin, f, z0) {
+    const m = metrics(zin, z0);
+    const pIn = Math.max(1 - m.s11 * m.s11, 0);
+    const elements = chain.map(el => ({ uid: el.uid, kind: el.kind, v: 0, i: 0, p: 0 }));
+    const nodes = chain.map(() => ({ v: { r: 0, i: 0 }, i: { r: 0, i: 0 } }));
+    nodes.push({ v: { r: 0, i: 0 }, i: { r: 0, i: 0 } });
+    if (pIn <= 0 || zin.r <= 1e-9) return { pIn: 0, pLoad: 0, elements, nodes };
+    let i = { r: Math.sqrt(pIn / zin.r), i: 0 };
+    let v = cmul(i, zin);
+    nodes[chain.length] = { v, i };
+    for (let k = chain.length - 1; k >= 0; k--) {
+      const el = chain[k];
+      const { a, b, c, d } = elAbcd(el, f);
+      const v2 = csub(cmul(d, v), cmul(b, i));
+      const i2 = csub(cmul(a, i), cmul(c, v));
+      const diss = Math.max(cmul(v, cconj(i)).r - cmul(v2, cconj(i2)).r, 0);
+      let ve, ie;
+      if (el.kind === 'Lser' || el.kind === 'Cser') { ve = cabs(cmul(b, i)); ie = cabs(i); }
+      else if (el.kind === 'Lpar' || el.kind === 'Cpar') { ve = cabs(v); ie = cabs(cmul(c, v)); }
+      else if (el.kind === 'line') { [ve, ie] = waveExtremes(v, i, el, f); }
+      else { [ve, ie] = waveExtremes(v, cmul(stubY(el, f), v), el, f); }
+      elements[k] = { uid: el.uid, kind: el.kind, v: ve, i: ie, p: diss };
+      v = v2; i = i2;
+      nodes[k] = { v, i };
+    }
+    return { pIn, pLoad: Math.max(cmul(v, cconj(i)).r, 0), elements, nodes };
+  }
+
+  function elRatio(el, v, i, p) {
+    let best = null, governs = null;
+    for (const [key, val] of [['vmax', v], ['imax', i], ['pmax', p]]) {
+      const lim = el[key];
+      if (lim && lim > 0) {
+        const r = val / lim;
+        if (best === null || r > best) { best = r; governs = key; }
+      }
+    }
+    return { ratio: best, governs };
+  }
+
+  // 扫频应力: 每频点逐段 V/I/P + 送达负载功率; 带内聚合每元件最差值/最差频点/裕量
+  function stressSweep(cfg, chain, power, freqs, bandHz) {
+    const pPeak = power.p_w * Math.pow(10, power.par_db / 10);
+    const pTherm = power.p_w * power.duty;
+    const spk = Math.sqrt(Math.max(pPeak, 0));
+    const [b1, b2] = bandHz;
+    const perEl = new Map();
+    const rows = [];
+    for (const f of freqs) {
+      const zl = loadAt(cfg.samples, f);
+      const zin = chainInput(zl, chain, f);
+      const st = stressAt(chain, zin, f, cfg.z0);
+      const inBand = f >= b1 - 1e-6 && f <= b2 + 1e-6;
+      const recs = chain.map((el, k) => {
+        const s = st.elements[k];
+        const v = s.v * spk, iv = s.i * spk, p = s.p * pTherm;
+        const { ratio, governs } = elRatio(el, v, iv, p);
+        if (inBand) {
+          let a = perEl.get(el.uid);
+          if (!a) {
+            a = { uid: el.uid, kind: el.kind, v: 0, i: 0, p: 0,
+                  vF: f, iF: f, pF: f, ratio: null, ratioF: null, governs: null };
+            perEl.set(el.uid, a);
+          }
+          if (v > a.v) { a.v = v; a.vF = f; }
+          if (iv > a.i) { a.i = iv; a.iF = f; }
+          if (p > a.p) { a.p = p; a.pF = f; }
+          if (ratio !== null && (a.ratio === null || ratio > a.ratio)) {
+            a.ratio = ratio; a.ratioF = f; a.governs = governs;
+          }
+        }
+        return { uid: el.uid, v, i: iv, p, ratio };
+      });
+      rows.push({
+        f, pIn: st.pIn * power.p_w, pLoad: st.pLoad * power.p_w,
+        pLoadAvg: st.pLoad * pTherm, pLoadPeak: st.pLoad * pPeak,
+        pLossAvg: Math.max(st.pIn - st.pLoad, 0) * pTherm, recs,
+      });
+    }
+    return { rows, perEl, pPeak, pTherm };
   }
 
   function parseSamples(text) {
@@ -173,6 +321,24 @@ const RF = (() => {
     if (a >= 1e-9) return (v * 1e9).toPrecision(3) + ' nF';
     return (v * 1e12).toPrecision(3) + ' pF';
   }
+  function fmtV(v) {
+    const a = Math.abs(v);
+    if (a >= 1000) return (v / 1000).toPrecision(3) + ' kV';
+    if (a >= 1) return v.toPrecision(3) + ' V';
+    return (v * 1e3).toPrecision(3) + ' mV';
+  }
+  function fmtA(v) {
+    const a = Math.abs(v);
+    if (a >= 1) return v.toPrecision(3) + ' A';
+    return (v * 1e3).toPrecision(3) + ' mA';
+  }
+  function fmtW(v) {
+    const a = Math.abs(v);
+    if (a >= 1000) return (v / 1000).toPrecision(3) + ' kW';
+    if (a >= 1) return v.toPrecision(3) + ' W';
+    if (a >= 1e-3) return (v * 1e3).toPrecision(3) + ' mW';
+    return (v * 1e6).toPrecision(3) + ' µW';
+  }
 
   const EL_LABEL = {
     Lser: '串联电感', Cser: '串联电容', Lpar: '并联电感', Cpar: '并联电容',
@@ -182,5 +348,6 @@ const RF = (() => {
   return {
     C0, TAU, lineGamma, lineZin, stubY, applyElement, chainInput,
     metrics, parseSamples, loadAt, sweepRange, evaluate, fmtL, fmtC, EL_LABEL,
+    elAbcd, waveExtremes, stressAt, elRatio, stressSweep, fmtV, fmtA, fmtW,
   };
 })();

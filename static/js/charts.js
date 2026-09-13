@@ -182,5 +182,127 @@ const SweepCharts = (() => {
     return v.toFixed(2);
   }
 
-  return { mount, render, nearestRow };
+  // ---- 应力利用率 / 功率 面板: 与扫频曲线共用频域和选中频点
+  const xPanels = [];
+  let onPickX = null;
+
+  function mountStress(ids, pickCb) {
+    onPickX = pickCb;
+    ids.forEach(id => {
+      const cv = document.getElementById(id);
+      if (!cv) return;
+      const panel = { cv, ctx: cv.getContext('2d') };
+      cv.addEventListener('click', e => {
+        const f = xToF(panel, e);
+        if (f != null && onPickX) onPickX(f);
+      });
+      xPanels.push(panel);
+    });
+  }
+
+  function frame(panel, title, yl, yh, fmtY) {
+    setup(panel);
+    const { ctx } = panel;
+    const { padL, padR, padT, padB, w, h } = panel.geom;
+    const iw = w - padL - padR, ih = h - padT - padB;
+    ctx.clearRect(0, 0, w, h);
+    ctx.fillStyle = '#1d2b3d55';
+    const bx0 = padL + f2x(domain.band1) * iw, bx1 = padL + f2x(domain.band2) * iw;
+    ctx.fillRect(bx0, padT, Math.max(1, bx1 - bx0), ih);
+    ctx.strokeStyle = '#26323f'; ctx.fillStyle = '#74869c';
+    ctx.font = '9px monospace'; ctx.textAlign = 'right'; ctx.lineWidth = 1;
+    for (let k = 0; k <= 4; k++) {
+      const v = yl + (yh - yl) * k / 4;
+      const y = padT + ih - k / 4 * ih;
+      ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + iw, y); ctx.stroke();
+      ctx.fillText(fmtY(v), padL - 4, y + 3);
+    }
+    ctx.textAlign = 'center';
+    for (let k = 0; k <= 4; k++) {
+      const f = domain.f1 + (domain.f2 - domain.f1) * k / 4;
+      ctx.fillText((f / 1e6).toFixed(2), padL + k / 4 * iw, h - 4);
+    }
+    ctx.textAlign = 'left'; ctx.fillStyle = '#9fb0c6'; ctx.font = '10px sans-serif';
+    ctx.fillText(title, padL + 2, 11);
+    return { padL, padT, iw, ih, yl, yh };
+  }
+
+  function hline(panel, sc, y, color, label) {
+    const { ctx } = panel;
+    const yy = sc.padT + sc.ih * (1 - (y - sc.yl) / (sc.yh - sc.yl));
+    ctx.strokeStyle = color; ctx.setLineDash([5, 4]); ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(sc.padL, yy); ctx.lineTo(sc.padL + sc.iw, yy); ctx.stroke();
+    ctx.setLineDash([]);
+    if (label) {
+      ctx.fillStyle = color; ctx.textAlign = 'right'; ctx.font = '9px sans-serif';
+      ctx.fillText(label, sc.padL + sc.iw - 2, yy - 3);
+    }
+  }
+
+  function poly(panel, sc, xs, ys, color, width, dash) {
+    const { ctx } = panel;
+    ctx.strokeStyle = color; ctx.lineWidth = width;
+    if (dash) ctx.setLineDash(dash);
+    ctx.beginPath();
+    let pen = false;
+    for (let k = 0; k < xs.length; k++) {
+      const v = ys[k];
+      if (!isFinite(v)) { pen = false; continue; }
+      const px = sc.padL + f2x(xs[k]) * sc.iw;
+      const py = sc.padT + sc.ih * (1 - (v - sc.yl) / (sc.yh - sc.yl));
+      if (!pen) { ctx.moveTo(px, py); pen = true; } else ctx.lineTo(px, py);
+    }
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  function pickMark(panel, sc, pickF) {
+    if (pickF == null) return;
+    const { ctx } = panel;
+    const x = sc.padL + f2x(pickF) * sc.iw;
+    ctx.strokeStyle = '#7ee787'; ctx.setLineDash([3, 3]); ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(x, sc.padT); ctx.lineTo(x, sc.padT + sc.ih); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  function renderStress(data) {
+    // data: { f1, f2, band1, band2, pickF, series:[{label,color,utils}], hasRatings,
+    //         marginPct, power:{freqs,avg,peak,loss} }
+    if (xPanels.length < 2) return;
+    domain.f1 = data.f1; domain.f2 = data.f2;
+    domain.band1 = data.band1; domain.band2 = data.band2;
+
+    // 应力利用率 (%额定)
+    const sp = xPanels[0];
+    let hi = 120;
+    if (data.hasRatings) {
+      for (const s of data.series) for (const v of s.utils) if (isFinite(v) && v > hi) hi = v;
+    }
+    hi *= 1.12;
+    const sc = frame(sp, '器件应力利用率 (%额定)', 0, hi, v => v.toFixed(0));
+    if (!data.hasRatings) {
+      sp.ctx.fillStyle = '#74869c'; sp.ctx.font = '11px sans-serif'; sp.ctx.textAlign = 'center';
+      sp.ctx.fillText('未设置额定值 — 只计算应力, 不判超限', sc.padL + sc.iw / 2, sc.padT + sc.ih / 2);
+    } else {
+      hline(sp, sc, 100, '#ff5c5caa', '100%');
+      if (data.marginPct != null && data.marginPct < 99.9)
+        hline(sp, sc, data.marginPct, '#ffd166aa', '裕量线');
+      for (const s of data.series) poly(sp, sc, data.freqs, s.utils, s.color, 1.4);
+    }
+    pickMark(sp, sc, data.pickF);
+
+    // 功率: 负载平均 / 负载峰值包络 / 链损耗
+    const pp = xPanels[1];
+    const pw = data.power;
+    let phi = 1e-9;
+    for (const arr of [pw.avg, pw.peak, pw.loss]) for (const v of arr) if (v > phi) phi = v;
+    phi *= 1.15;
+    const sc2 = frame(pp, '功率 (W): 负载平均 / 峰值包络 / 链损耗', 0, phi, fmtTick);
+    poly(pp, sc2, pw.freqs, pw.loss, '#ff9e64', 1);
+    poly(pp, sc2, pw.freqs, pw.peak, '#ffd166', 1, [4, 3]);
+    poly(pp, sc2, pw.freqs, pw.avg, '#7ee787', 1.6);
+    pickMark(pp, sc2, data.pickF);
+  }
+
+  return { mount, render, nearestRow, mountStress, renderStress };
 })();
