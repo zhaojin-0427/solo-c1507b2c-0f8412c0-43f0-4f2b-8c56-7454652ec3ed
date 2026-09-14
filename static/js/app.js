@@ -31,6 +31,7 @@
     traceSteps: null,
     projectId: null,
     projectName: '未命名项目',
+    meas: null,           // 负载采样来源: {kitId, kitName, inputHash, nPoints, rms}
   };
 
   const MAINLINE_UID = 'mainline';
@@ -109,6 +110,36 @@
     return data;
   }
 
+  // ------------------------------------------------------------ 工作区切换
+  function switchWorkspace(name) {
+    $('#tabMatch').classList.toggle('on', name === 'match');
+    $('#tabMeas').classList.toggle('on', name === 'meas');
+    $('#matchLayout').classList.toggle('hidden', name !== 'match');
+    $('#measLayout').classList.toggle('hidden', name !== 'meas');
+    if (name === 'match') scheduleRecompute();
+  }
+
+  // 测量校准工作区入口: 写入修正后的负载采样并记录来源 (校准组 + 输入哈希)
+  function applyMeasSamples(text, meta) {
+    state.samplesText = text;
+    state.meas = meta;
+    state.baselineRows = null;
+    $('#samplesText').value = text;
+    switchWorkspace('match');
+    state.samples = RF.parseSamples(text);
+    scheduleRecompute();
+  }
+  window.RFMatch = { applyMeasSamples };
+
+  function renderMeasSrc() {
+    const el = $('#samplesSrc');
+    if (!state.meas) { el.textContent = ''; el.className = 'hint meas-src'; return; }
+    const m = state.meas;
+    el.innerHTML = `来源: OSL 校准组 #${m.kitId} ${escapeHtml(m.kitName)} · ` +
+      `输入哈希 ${m.inputHash.slice(0, 12)}… · ${m.nPoints}点 · 残差RMS ${m.rms.toFixed(4)}`;
+    el.className = 'hint meas-src has-src';
+  }
+
   // ------------------------------------------------------------ 重算管线
   let recomputeQueued = false;
   function scheduleRecompute() {
@@ -122,6 +153,7 @@
     $('#samplesInfo').textContent = state.samples.length
       ? `已解析 ${state.samples.length} 点 · ${fmtF(state.samples[0][0])}~${fmtF(state.samples.at(-1)[0])} MHz`
       : '未解析到有效数据';
+    renderMeasSrc();
     if (!state.samples.length) return;
 
     const cfg = {
@@ -704,6 +736,7 @@
       projectName: state.projectName,
       eseries: state.cfg.eseries,
       power: state.power, min_margin: state.cfg.min_margin,
+      meas: state.meas,   // 来源校准组 + 输入哈希, 随项目/版本保存
     };
   }
 
@@ -722,6 +755,7 @@
     state.projectName = s.projectName || '未命名项目';
     state.candidates = []; state.activeCand = null; state.overlays = new Set();
     state.pickF = null; state.traceSteps = null;
+    state.meas = s.meas || null;
     syncAllForms();
     renderChain();
     renderCandidates();
@@ -771,9 +805,11 @@
     const label = prompt('版本标签', new Date().toLocaleString());
     if (label == null) return;
     const worst = state.currentEval ? state.currentEval.worstVswr.toFixed(3) : '';
+    const calTag = state.meas
+      ? ` · 校准组#${state.meas.kitId} 哈希${state.meas.inputHash.slice(0, 8)}` : '';
     await fetch(`/api/projects/${state.projectId}/versions`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ label, summary: '最差VSWR ' + worst, state: snapshot() }),
+      body: JSON.stringify({ label, summary: '最差VSWR ' + worst + calTag, state: snapshot() }),
     });
     alert('版本已保存');
   }
@@ -839,6 +875,7 @@
   function bindForms() {
     $('#samplesText').addEventListener('input', () => {
       state.samplesText = $('#samplesText').value;
+      state.meas = null;              // 手动修改采样后来源失效
       state.baselineRows = null; scheduleRecompute();
     });
     $('#btnParse').addEventListener('click', () => {
@@ -892,6 +929,8 @@
 
     $('#btnSolve').addEventListener('click', runSolve);
     $('#btnMC').addEventListener('click', runMC);
+    $('#tabMatch').addEventListener('click', () => switchWorkspace('match'));
+    $('#tabMeas').addEventListener('click', () => switchWorkspace('meas'));
     $('#btnSaveProject').addEventListener('click', saveProject);
     $('#btnSaveVersion').addEventListener('click', saveVersion);
     $('#btnVersions').addEventListener('click', openVersions);

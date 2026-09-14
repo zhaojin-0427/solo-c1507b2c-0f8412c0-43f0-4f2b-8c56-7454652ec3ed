@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "ven
 from flask import Flask, request, jsonify, g, send_from_directory
 
 import rf
+import calib
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE, "matchlab.db")
@@ -55,6 +56,30 @@ def init_db():
                state TEXT NOT NULL,
                summary TEXT DEFAULT '',
                FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+           )""")
+    # OSL 校准组: 草稿可改, 采用后冻结 (solution 存完整求解结果)
+    con.execute(
+        """CREATE TABLE IF NOT EXISTS cal_kits (
+               id INTEGER PRIMARY KEY AUTOINCREMENT,
+               name TEXT NOT NULL,
+               status TEXT NOT NULL DEFAULT 'draft',
+               z0 REAL NOT NULL DEFAULT 50.0,
+               standards TEXT NOT NULL DEFAULT '{}',
+               solution TEXT,
+               created REAL NOT NULL,
+               updated REAL NOT NULL,
+               adopted REAL
+           )""")
+    # 每件标准件的多次实测反射轨迹: points = [[f_hz, re, im]…]
+    con.execute(
+        """CREATE TABLE IF NOT EXISTS cal_sweeps (
+               id INTEGER PRIMARY KEY AUTOINCREMENT,
+               kit_id INTEGER NOT NULL,
+               standard TEXT NOT NULL,
+               label TEXT DEFAULT '',
+               points TEXT NOT NULL,
+               created REAL NOT NULL,
+               FOREIGN KEY(kit_id) REFERENCES cal_kits(id) ON DELETE CASCADE
            )""")
     con.commit()
     con.close()
@@ -366,6 +391,254 @@ def api_version_delete(vid):
     con.execute("DELETE FROM versions WHERE id=?", (vid,))
     con.commit()
     return jsonify({"ok": True})
+
+
+# ---------------------------------------------------------------- API: OSL 校准组
+
+def _load_sweeps(con, kit_id):
+    """{std: [{"label":…, "points":[(f,re,im)…]}…]}, 按插入序保持多次扫线。"""
+    rows = con.execute(
+        "SELECT id, standard, label, points FROM cal_sweeps WHERE kit_id=? ORDER BY id",
+        (kit_id,)).fetchall()
+    by = {k: [] for k in calib.STD_KEYS}
+    for r in rows:
+        pts = [tuple(p) for p in json.loads(r["points"])]
+        by.setdefault(r["standard"], []).append(
+            {"label": r["label"] or ("扫线#%d" % r["id"]), "points": pts})
+    return by
+
+
+def _kit_json(row, con, with_sweeps=True):
+    out = {"id": row["id"], "name": row["name"], "status": row["status"],
+           "z0": row["z0"], "standards": json.loads(row["standards"]),
+           "created": row["created"], "updated": row["updated"],
+           "adopted": row["adopted"]}
+    if with_sweeps:
+        sw = con.execute(
+            "SELECT id, standard, label, points, created FROM cal_sweeps "
+            "WHERE kit_id=? ORDER BY id", (row["id"],)).fetchall()
+        out["sweeps"] = []
+        for s in sw:
+            pts = json.loads(s["points"])
+            fs = [p[0] for p in pts]
+            out["sweeps"].append({"id": s["id"], "standard": s["standard"],
+                                  "label": s["label"], "n": len(pts),
+                                  "f_lo": min(fs), "f_hi": max(fs),
+                                  "created": s["created"]})
+    sol = json.loads(row["solution"]) if row["solution"] else None
+    out["solution"] = ({k: sol[k] for k in
+                        ("rms_global", "residual_ok", "residual_limit", "n_points",
+                         "f_range", "diagnostics", "sweeps", "digest", "solved_at")
+                        if k in sol} if sol else None)
+    return out
+
+
+def _get_kit(kit_id):
+    return db().execute("SELECT * FROM cal_kits WHERE id=?", (kit_id,)).fetchone()
+
+
+def _solve_kit(kit, con):
+    """对当前标准件定义 + 全部扫线做 OSL 最小二乘求解。"""
+    standards = calib.normalize_standards(json.loads(kit["standards"]), kit["z0"])
+    sweeps = _load_sweeps(con, kit["id"])
+    return calib.solve_osl(standards, sweeps, kit["z0"])
+
+
+@app.get("/api/calkits")
+def api_calkits():
+    con = db()
+    rows = con.execute(
+        "SELECT k.*, (SELECT COUNT(*) FROM cal_sweeps s WHERE s.kit_id=k.id) AS nsw "
+        "FROM cal_kits k ORDER BY k.updated DESC").fetchall()
+    out = []
+    for r in rows:
+        sol = json.loads(r["solution"]) if r["solution"] else None
+        out.append({"id": r["id"], "name": r["name"], "status": r["status"],
+                    "z0": r["z0"], "updated": r["updated"], "n_sweeps": r["nsw"],
+                    "residual_ok": sol.get("residual_ok") if sol else None,
+                    "rms_global": sol.get("rms_global") if sol else None})
+    return jsonify(out)
+
+
+@app.post("/api/calkits")
+def api_calkit_create():
+    p = request.get_json(force=True)
+    name = (p.get("name") or "未命名校准组").strip()[:80]
+    z0 = _num_or(p.get("z0"), 50.0)
+    if z0 <= 0:
+        return jsonify({"error": "参考阻抗必须为正"}), 400
+    standards = calib.normalize_standards(p.get("standards"), z0)
+    now = time.time()
+    con = db()
+    cur = con.execute(
+        "INSERT INTO cal_kits(name, status, z0, standards, created, updated) "
+        "VALUES(?, 'draft', ?, ?, ?, ?)",
+        (name, z0, json.dumps(standards), now, now))
+    con.commit()
+    return jsonify({"id": cur.lastrowid, "name": name})
+
+
+@app.get("/api/calkits/<int:kid>")
+def api_calkit_get(kid):
+    row = _get_kit(kid)
+    if not row:
+        return jsonify({"error": "校准组不存在"}), 404
+    return jsonify(_kit_json(row, db()))
+
+
+@app.put("/api/calkits/<int:kid>")
+def api_calkit_update(kid):
+    row = _get_kit(kid)
+    if not row:
+        return jsonify({"error": "校准组不存在"}), 404
+    if row["status"] != "draft":
+        return jsonify({"error": "校准组已采用, 不可改写"}), 409
+    p = request.get_json(force=True)
+    name = (p.get("name") or row["name"]).strip()[:80]
+    z0 = _num_or(p.get("z0"), row["z0"])
+    if z0 <= 0:
+        return jsonify({"error": "参考阻抗必须为正"}), 400
+    standards = calib.normalize_standards(p.get("standards"), z0)
+    con = db()
+    con.execute("UPDATE cal_kits SET name=?, z0=?, standards=?, updated=? WHERE id=?",
+                (name, z0, json.dumps(standards), time.time(), kid))
+    con.commit()
+    return jsonify({"ok": True})
+
+
+@app.delete("/api/calkits/<int:kid>")
+def api_calkit_delete(kid):
+    row = _get_kit(kid)
+    if not row:
+        return jsonify({"error": "校准组不存在"}), 404
+    if row["status"] != "draft":
+        return jsonify({"error": "校准组已采用, 不可删除"}), 409
+    con = db()
+    con.execute("DELETE FROM cal_sweeps WHERE kit_id=?", (kid,))
+    con.execute("DELETE FROM cal_kits WHERE id=?", (kid,))
+    con.commit()
+    return jsonify({"ok": True})
+
+
+@app.post("/api/calkits/<int:kid>/sweeps")
+def api_sweep_add(kid):
+    row = _get_kit(kid)
+    if not row:
+        return jsonify({"error": "校准组不存在"}), 404
+    if row["status"] != "draft":
+        return jsonify({"error": "校准组已采用, 不可改写"}), 409
+    p = request.get_json(force=True)
+    std = (p.get("standard") or "").strip()
+    if std not in calib.STD_KEYS:
+        return jsonify({"error": "标准件类型须为 open/short/load"}), 400
+    pts, warns = calib.parse_reflection_text(p.get("text", ""),
+                                             p.get("fmt"), p.get("unit"))
+    if not pts:
+        return jsonify({"error": "未解析到有效的反射扫线数据",
+                        "warns": [w[1] for w in warns]}), 400
+    label = (p.get("label") or "").strip()[:60]
+    con = db()
+    cur = con.execute(
+        "INSERT INTO cal_sweeps(kit_id, standard, label, points, created) "
+        "VALUES(?,?,?,?,?)",
+        (kid, std, label, json.dumps([[f, re, im] for f, re, im in pts]), time.time()))
+    con.execute("UPDATE cal_kits SET updated=? WHERE id=?", (time.time(), kid))
+    con.commit()
+    return jsonify({"id": cur.lastrowid, "n": len(pts),
+                    "f_lo": pts[0][0], "f_hi": pts[-1][0],
+                    "warns": [w[1] for w in warns]})
+
+
+@app.delete("/api/calkits/<int:kid>/sweeps/<int:sid>")
+def api_sweep_delete(kid, sid):
+    row = _get_kit(kid)
+    if not row:
+        return jsonify({"error": "校准组不存在"}), 404
+    if row["status"] != "draft":
+        return jsonify({"error": "校准组已采用, 不可改写"}), 409
+    con = db()
+    con.execute("DELETE FROM cal_sweeps WHERE id=? AND kit_id=?", (sid, kid))
+    con.execute("UPDATE cal_kits SET updated=? WHERE id=?", (time.time(), kid))
+    con.commit()
+    return jsonify({"ok": True})
+
+
+@app.post("/api/calkits/<int:kid>/solve")
+def api_calkit_solve(kid):
+    """求解校验: 草稿按当前数据实时求解; 已采用返回冻结的求解结果。"""
+    row = _get_kit(kid)
+    if not row:
+        return jsonify({"error": "校准组不存在"}), 404
+    if row["status"] == "adopted" and row["solution"]:
+        return jsonify(json.loads(row["solution"]))
+    return jsonify(_solve_kit(row, db()))
+
+
+@app.post("/api/calkits/<int:kid>/adopt")
+def api_calkit_adopt(kid):
+    """采用校准组: 求解通过后冻结, 之后不可改写。"""
+    row = _get_kit(kid)
+    if not row:
+        return jsonify({"error": "校准组不存在"}), 404
+    if row["status"] != "draft":
+        return jsonify({"error": "校准组已采用, 不可改写"}), 409
+    sol = _solve_kit(row, db())
+    if not sol["ok"]:
+        return jsonify({"error": "求解未通过, 无法采用",
+                        "diagnostics": sol["diagnostics"]}), 400
+    sol["digest"] = calib.solution_digest(sol)
+    sol["solved_at"] = time.time()
+    now = time.time()
+    con = db()
+    con.execute("UPDATE cal_kits SET status='adopted', solution=?, adopted=?, updated=? "
+                "WHERE id=?", (json.dumps(sol), now, now, kid))
+    con.commit()
+    return jsonify({"ok": True, "residual_ok": sol["residual_ok"],
+                    "rms_global": sol["rms_global"]})
+
+
+# ---------------------------------------------------------------- API: 测量修正
+
+@app.post("/api/meas/correct")
+def api_meas_correct():
+    """用已采用校准组修正待测件扫线, 返回修正前后轨迹 + 系数 + 残差 + 输入哈希。"""
+    p = request.get_json(force=True)
+    kit = _get_kit(int(p.get("kit_id") or 0))
+    if not kit:
+        return jsonify({"error": "校准组不存在"}), 404
+    if kit["status"] != "adopted" or not kit["solution"]:
+        return jsonify({"error": "校准组仍为草稿, 请先「采用」冻结后再用于修正"}), 409
+    sol = json.loads(kit["solution"])
+    pts, warns = calib.parse_reflection_text(p.get("text", ""),
+                                             p.get("fmt"), p.get("unit"))
+    if not pts:
+        return jsonify({"error": "未解析到有效的待测件数据",
+                        "diagnostics": [{"level": "warn", "kind": k, "msg": m}
+                                        for k, m in warns]}), 400
+    rows, dropped = calib.correct_points(sol, pts, kit["z0"])
+    if not rows:
+        return jsonify({"error": "待测件频点全部超出校准覆盖范围 %.4f~%.4f MHz"
+                                 % (sol["f_range"][0] / 1e6, sol["f_range"][1] / 1e6),
+                        "diagnostics": [{"level": "warn", "kind": k, "msg": m}
+                                        for k, m in warns]}), 400
+    diags = [{"level": "warn", "kind": k, "msg": m} for k, m in warns]
+    if dropped:
+        diags.append({"level": "warn", "kind": "gap",
+                      "msg": "%d 个频点超出校准覆盖范围 %.4f~%.4f MHz, 已丢弃"
+                             % (dropped, sol["f_range"][0] / 1e6,
+                                sol["f_range"][1] / 1e6)})
+    digest = sol.get("digest") or calib.solution_digest(sol)
+    return jsonify({
+        "kit": {"id": kit["id"], "name": kit["name"]},
+        "z0": kit["z0"],
+        "rows": rows, "dropped": dropped,
+        "diagnostics": diags,
+        "residual_ok": bool(sol.get("residual_ok")),
+        "rms_global": sol.get("rms_global"),
+        "residual_limit": sol.get("residual_limit", calib.RESIDUAL_LIMIT),
+        "input_hash": calib.input_hash(kit["id"], digest, pts),
+        "f_range": sol["f_range"],
+    })
 
 
 # ---------------------------------------------------------------- 页面

@@ -192,3 +192,54 @@ label { font-size: 11px; color: var(--dim); display: flex; flex-direction: colum
 .stress-badge { font-size: 9.5px; padding: 0 4px; border-radius: 3px; margin-left: 4px; white-space: nowrap; }
 .stress-badge.sok { background: #14331f; color: var(--green); }
 .stress-badge.sbad { background: #3a1a1a; color: var(--red); }
+
+/* ---- 工作区切换 ---- */
+.ws-tabs { display: flex; gap: 4px; }
+.ws-tab {
+  background: transparent; color: var(--dim); border: 1px solid var(--border);
+  border-radius: 5px; padding: 5px 14px; font-size: 12px; cursor: pointer;
+}
+.ws-tab:hover { color: #fff; border-color: var(--accent); }
+.ws-tab.on { background: #1d4ed822; border-color: #3b82f6; color: #9cc5ff; }
+
+/* ---- 测量校准工作区 ---- */
+.cal-status { font-size: 10px; padding: 1px 6px; border-radius: 3px; }
+.cal-status.cs-draft { background: #3a3018; color: var(--yellow); }
+.cal-status.cs-adopted { background: #14331f; color: var(--green); }
+.btn-group { display: flex; gap: 6px; align-items: center; }
+
+.std-block { border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; margin-bottom: 7px; background: var(--panel2); }
+.std-block .std-title { font-size: 11.5px; font-weight: 600; margin-bottom: 5px; color: var(--accent); }
+.std-block .grid2 { margin-bottom: 0; }
+
+.sweep-list { margin-top: 8px; max-height: 180px; overflow-y: auto; }
+.sweep-row {
+  display: grid; grid-template-columns: 40px 1fr auto 18px; gap: 6px; align-items: center;
+  padding: 3px 4px; border-bottom: 1px solid var(--border); font-size: 11px;
+}
+.sweep-row .sw-std { font-size: 10px; padding: 0 4px; border-radius: 3px; text-align: center; }
+.sweep-row .sw-open { background: #14331f; color: var(--green); }
+.sweep-row .sw-short { background: #2c1e33; color: #c792ea; }
+.sweep-row .sw-load { background: #1d2b3d; color: var(--accent); }
+.sweep-row .sw-lab { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sweep-row .sw-info { color: var(--dim); font-family: var(--mono); font-size: 10px; }
+.sweep-row .sw-del { cursor: pointer; color: #f2a0a0; text-align: center; }
+.sweep-row .sw-del:hover { color: #fff; }
+
+.diag-box { margin-top: 8px; max-height: 170px; overflow-y: auto; font-size: 11px; }
+.diag-row { padding: 3px 6px; border-bottom: 1px solid var(--border); font-family: var(--mono); font-size: 10.5px; }
+.diag-row.d-error { color: var(--red); }
+.diag-row.d-warn { color: var(--yellow); }
+.diag-row.d-info { color: var(--dim); }
+
+.point-box { font-family: var(--mono); font-size: 11.5px; max-height: 240px; overflow-y: auto; }
+.pt-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.pt-sec { background: var(--panel2); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; }
+.pt-sec .pt-title { font-size: 10.5px; color: var(--accent); font-weight: 600; margin-bottom: 4px; }
+.pt-sec div { line-height: 1.5; }
+
+.gate-box { margin-bottom: 6px; font-size: 11.5px; }
+.gate-ok { color: var(--green); font-family: var(--mono); }
+.gate-bad { color: var(--red); font-family: var(--mono); }
+.meas-src { margin-top: 4px; min-height: 13px; }
+.meas-src.has-src { color: var(--green); }

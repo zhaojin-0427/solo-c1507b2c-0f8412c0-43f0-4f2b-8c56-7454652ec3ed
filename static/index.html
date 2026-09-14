@@ -10,6 +10,10 @@
 <body>
 <header class="topbar">
   <div class="brand">📡 射频匹配推演台 <span class="sub">馈线 / 支节 / L 型网络 · 史密斯图同步推演</span></div>
+  <div class="ws-tabs">
+    <button id="tabMatch" class="ws-tab on">匹配推演</button>
+    <button id="tabMeas" class="ws-tab">测量校准</button>
+  </div>
   <div class="top-actions">
     <select id="projectSel" title="已保存项目"><option value="">— 选择项目 —</option></select>
     <button id="btnSaveProject" class="btn">💾 保存项目</button>
@@ -19,7 +23,7 @@
   </div>
 </header>
 
-<main class="layout">
+<main class="layout" id="matchLayout">
   <!-- 左栏 -->
   <section class="col col-left">
     <div class="card" id="cardSamples">
@@ -29,6 +33,7 @@
         <button id="btnParse" class="btn btn-small">解析并重算</button>
         <span id="samplesInfo" class="hint"></span>
       </div>
+      <div id="samplesSrc" class="hint meas-src"></div>
     </div>
 
     <div class="card">
@@ -168,6 +173,166 @@
   </section>
 </main>
 
+<!-- ============ 测量校准工作区 ============ -->
+<main class="layout hidden" id="measLayout">
+  <!-- 左栏: 校准组管理 -->
+  <section class="col col-left">
+    <div class="card">
+      <h3>OSL 校准组 <span id="calKitStatus" class="cal-status"></span></h3>
+      <div class="row-between" style="margin-top:0">
+        <select id="calKitSel"><option value="">— 选择校准组 —</option></select>
+        <button id="btnNewKit" class="btn btn-small">新建</button>
+        <button id="btnDelKit" class="btn btn-small btn-danger-ghost">删除</button>
+      </div>
+      <div class="grid2" style="margin-top:8px">
+        <label>名称 <input id="calKitName" spellcheck="false"></label>
+        <label>参考阻抗 Z₀ (Ω) <input id="calKitZ0" type="number" value="50" step="1" min="1"></label>
+      </div>
+      <div id="calSolutionInfo" class="hint"></div>
+      <div class="row-between">
+        <button id="btnSaveKit" class="btn btn-small">保存草稿</button>
+        <button id="btnSolveKit" class="btn btn-small">求解校验</button>
+        <button id="btnAdoptKit" class="btn btn-primary btn-small">✔ 采用校准组</button>
+      </div>
+      <div id="calDiagBox" class="diag-box"></div>
+    </div>
+
+    <div class="card" id="cardStandards">
+      <h3>标准件定义 <span class="hint">偏移损耗为单向 dB, 按 √(f/fref) 缩放</span></h3>
+      <div class="std-block">
+        <div class="std-title">开路 Open</div>
+        <div class="grid2">
+          <label>边缘电容 (pF) <input type="number" id="stdOpenC" step="0.01" min="0"></label>
+          <label>偏移延时 (ps) <input type="number" id="stdOpenDelay" step="1" min="0"></label>
+          <label>偏移损耗 (dB) <input type="number" id="stdOpenLoss" step="0.01" min="0"></label>
+          <label>损耗参考频率 (MHz) <input type="number" id="stdOpenLossF" step="10" min="0"></label>
+        </div>
+      </div>
+      <div class="std-block">
+        <div class="std-title">短路 Short</div>
+        <div class="grid2">
+          <label>残余电感 (nH) <input type="number" id="stdShortL" step="0.01" min="0"></label>
+          <label>偏移延时 (ps) <input type="number" id="stdShortDelay" step="1" min="0"></label>
+          <label>偏移损耗 (dB) <input type="number" id="stdShortLoss" step="0.01" min="0"></label>
+          <label>损耗参考频率 (MHz) <input type="number" id="stdShortLossF" step="10" min="0"></label>
+        </div>
+      </div>
+      <div class="std-block">
+        <div class="std-title">负载 Load</div>
+        <div class="grid2">
+          <label>负载电阻 (Ω) <input type="number" id="stdLoadR" step="0.1" min="0"></label>
+          <label>偏移延时 (ps) <input type="number" id="stdLoadDelay" step="1" min="0"></label>
+          <label>偏移损耗 (dB) <input type="number" id="stdLoadLoss" step="0.01" min="0"></label>
+          <label>损耗参考频率 (MHz) <input type="number" id="stdLoadLossF" step="10" min="0"></label>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>标准件实测扫线 <span class="hint">每件可多次扫线, 提供冗余约束</span></h3>
+      <div class="grid2">
+        <label>标准件 <select id="sweepStd">
+          <option value="open">开路</option>
+          <option value="short">短路</option>
+          <option value="load">负载</option>
+        </select></label>
+        <label>数据格式 <select id="sweepFmt">
+          <option value="ma">MA 幅值/角度°</option>
+          <option value="db">DB dB/角度°</option>
+          <option value="ri">RI 实部/虚部</option>
+        </select></label>
+        <label>频率单位 <select id="sweepUnit">
+          <option value="hz">Hz</option><option value="khz">kHz</option>
+          <option value="mhz" selected>MHz</option><option value="ghz">GHz</option>
+        </select></label>
+        <label>标签 (可选) <input id="sweepLabel" placeholder="如 第2次复测" spellcheck="false"></label>
+      </div>
+      <textarea id="sweepText" rows="4" spellcheck="false"
+        placeholder="频率 幅值 角度 (每行一点)&#10;或粘贴 .s1p 内容 (自动识别 # 选项行)"></textarea>
+      <div class="row-between">
+        <div class="btn-group">
+          <button id="btnAddSweep" class="btn btn-small">添加扫线</button>
+          <input type="file" id="sweepFile" accept=".s1p,.txt,.csv" class="hidden">
+          <button id="btnSweepFile" class="btn btn-small btn-ghost">导入 .s1p</button>
+        </div>
+        <span id="sweepInfo" class="hint"></span>
+      </div>
+      <div id="sweepList" class="sweep-list"></div>
+    </div>
+  </section>
+
+  <!-- 中栏: 待测件 + 史密斯 -->
+  <section class="col col-mid">
+    <div class="card">
+      <h3>待测件输入 <span class="hint">粘贴 频率+RI/MA/DB 数据或导入 Touchstone .s1p</span></h3>
+      <div class="grid2">
+        <label>数据格式 <select id="dutFmt">
+          <option value="ma">MA 幅值/角度°</option>
+          <option value="db">DB dB/角度°</option>
+          <option value="ri">RI 实部/虚部</option>
+        </select></label>
+        <label>频率单位 <select id="dutUnit">
+          <option value="hz">Hz</option><option value="khz">kHz</option>
+          <option value="mhz" selected>MHz</option><option value="ghz">GHz</option>
+        </select></label>
+      </div>
+      <textarea id="dutText" rows="5" spellcheck="false"
+        placeholder="频率 幅值 角度 (每行一点)&#10;或粘贴 .s1p 内容"></textarea>
+      <div class="row-between">
+        <div class="btn-group">
+          <button id="btnCorrect" class="btn btn-primary btn-small">📐 校正计算</button>
+          <input type="file" id="dutFile" accept=".s1p,.txt,.csv" class="hidden">
+          <button id="btnDutFile" class="btn btn-small btn-ghost">导入 .s1p</button>
+        </div>
+        <span id="dutInfo" class="hint"></span>
+      </div>
+    </div>
+    <div class="card smith-card">
+      <h3>史密斯圆图 · 修正前/后 <span id="measSmithInfo" class="hint"></span></h3>
+      <canvas id="measSmith" width="560" height="560"></canvas>
+      <div class="legend">
+        <span><i style="background:#ffd166"></i>原始轨迹</span>
+        <span><i style="background:#4fa3ff"></i>校正结果</span>
+        <span><i style="background:#7ee787"></i>选中频点</span>
+      </div>
+    </div>
+    <div class="card">
+      <h3>频点详情 <span id="measPointInfo" class="hint">在史密斯图或误差曲线上点选频点</span></h3>
+      <div id="measPointBox" class="point-box">
+        <div class="hint">校正计算后, 点选频点查看三项误差系数 / 标准件残差 / 修正前后阻抗。</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 右栏: 误差曲线 + 诊断 + 生成采样 -->
+  <section class="col col-right">
+    <div class="card charts-card">
+      <h3>误差曲线</h3>
+      <canvas id="chartCoef"></canvas>
+      <canvas id="chartCorr"></canvas>
+      <div class="legend">
+        <span><i style="background:#4fa3ff"></i>|ed| 方向性</span>
+        <span><i style="background:#ff6b9d"></i>|es| 源匹配</span>
+        <span><i style="background:#7ee787"></i>|er| 反射跟踪</span>
+        <span><i style="background:#ffd166"></i>|ΔΓ| 修正量</span>
+        <span><i style="background:#ff9e64"></i>残差RMS</span>
+      </div>
+    </div>
+    <div class="card">
+      <h3>校准诊断</h3>
+      <div id="measDiagBox" class="diag-box"><div class="hint">选择校准组后此处显示求解诊断。</div></div>
+    </div>
+    <div class="card">
+      <h3>生成负载采样</h3>
+      <div id="measGate" class="gate-box"><div class="hint">校正计算并通过残差检查后可生成负载采样。</div></div>
+      <div class="row-between">
+        <button id="btnToSamples" class="btn btn-primary" disabled>生成负载采样并送入匹配推演</button>
+      </div>
+      <div id="measHash" class="hint"></div>
+    </div>
+  </section>
+</main>
+
 <div id="modalMask" class="modal-mask hidden">
   <div class="modal">
     <h3 id="modalTitle">历史版本</h3>
@@ -182,5 +347,6 @@
 <script src="/static/js/smith.js"></script>
 <script src="/static/js/charts.js"></script>
 <script src="/static/js/app.js"></script>
+<script src="/static/js/meas.js"></script>
 </body>
 </html>

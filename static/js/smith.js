@@ -1,5 +1,5 @@
-/* 史密斯圆图 (阻抗坐标) Canvas 绘制 */
-const SmithChart = (() => {
+/* 史密斯圆图 (阻抗坐标) Canvas 绘制 —— 工厂函数, 每个画布一个实例 */
+function createSmithChart() {
   let canvas, ctx, cv;
   let R = 200, cx = 0, cy = 0, scale = 1;
   const RGRID = [0.2, 0.5, 1, 2, 5];
@@ -165,4 +165,7 @@ const SmithChart = (() => {
   }
 
   return { mount, render, pickGamma, toPx, get geom() { return { cx, cy, R }; } };
-})();
+}
+
+/* 主工作区默认实例 (app.js 使用) */
+const SmithChart = createSmithChart();
