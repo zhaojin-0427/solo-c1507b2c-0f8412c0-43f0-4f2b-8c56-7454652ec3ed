@@ -275,22 +275,35 @@ def _wave_extremes(v_src, i_src, el, f):
     return ext(a, b), ext(c, d)
 
 
-def stress_at(chain, zin, f, z0):
-    """1W 可用功率下自源端向负载逐段反推 V/I, 求每段电压/电流/损耗 (RMS)。
-    返回 {p_in, p_load, elements:[{uid,kind,v,i,p}], nodes:[(v,i)…](负载侧→源侧)}"""
+def stress_at(chain, zl, f, z0):
+    """统一有损模型 (含 Q 与线损): 先级联有损 ABCD 求输入阻抗,
+    再以 1W 可用功率自源端向负载逐段反推 V/I, 求每段电压/电流/损耗 (RMS)。
+    阻抗、电压、电流、损耗、送达功率全部出自同一有损链路;
+    返推终点与负载阻抗严格闭合。匹配/VSWR 显示仍为理想模型。
+    返回 {p_in, p_load, zin, elements:[{uid,kind,v,i,p}], nodes:[(v,i)…](负载侧→源侧)}"""
+    zl = complex(zl)
+    # 级联 ABCD (负载→源): T = M_{n-1} … M_0
+    A, B, C, D = 1.0 + 0.0j, 0.0 + 0.0j, 0.0 + 0.0j, 1.0 + 0.0j
+    abcds = []
+    for el in chain:
+        a, b, c, d = _el_abcd(el, f)
+        abcds.append((a, b, c, d))
+        A, B, C, D = a * A + b * C, a * B + b * D, c * A + d * C, c * B + d * D
+    denom = C * zl + D
+    zin = (A * zl + B) / denom if abs(denom) > 1e-30 else complex(1e30, 0.0)
     g = abs(gamma_of(zin, z0))
     p_in = max(1.0 - g * g, 0.0)
     elements = [{"uid": e.get("uid"), "kind": e["kind"], "v": 0.0, "i": 0.0, "p": 0.0}
                 for e in chain]
     nodes = [(0.0j, 0.0j)] * (len(chain) + 1)
     if p_in <= 0.0 or zin.real <= 1e-9:
-        return {"p_in": 0.0, "p_load": 0.0, "elements": elements, "nodes": nodes}
+        return {"p_in": 0.0, "p_load": 0.0, "zin": zin, "elements": elements, "nodes": nodes}
     i = complex(math.sqrt(p_in / zin.real), 0.0)
     v = i * zin
     nodes[len(chain)] = (v, i)
     for k in range(len(chain) - 1, -1, -1):
         el = chain[k]
-        A, B, C, D = _el_abcd(el, f)
+        A, B, C, D = abcds[k]
         v2 = D * v - B * i          # 互易网络 det=1, 逆矩阵 [D -B; -C A]
         i2 = A * i - C * v
         diss = max((v * i.conjugate()).real - (v2 * i2.conjugate()).real, 0.0)
@@ -306,7 +319,7 @@ def stress_at(chain, zin, f, z0):
         elements[k] = {"uid": el.get("uid"), "kind": kk, "v": ve, "i": ie, "p": diss}
         v, i = v2, i2
         nodes[k] = (v, i)
-    return {"p_in": p_in, "p_load": max((v * i.conjugate()).real, 0.0),
+    return {"p_in": p_in, "p_load": max((v * i.conjugate()).real, 0.0), "zin": zin,
             "elements": elements, "nodes": nodes}
 
 
@@ -342,8 +355,7 @@ def stress_summary(cfg, chain, freqs):
             order.append(uid)
     for f in freqs:
         zl = load_at(cfg["samples"], f)
-        zin = chain_input(zl, chain, f)
-        st = stress_at(chain, zin, f, z0)
+        st = stress_at(chain, zl, f, z0)
         for el, rec in zip(chain, st["elements"]):
             a = per[el.get("uid")]
             vv, ii, pp = rec["v"] * spk, rec["i"] * spk, rec["p"] * p_therm
@@ -757,8 +769,7 @@ def monte_carlo(cfg, chain, locks, seed=1, tol=0.05, len_tol=0.0, n=500):
         if has_rt:
             for f in sgrid:
                 zl = load_at(cfg["samples"], f)
-                zin = chain_input(zl, trial, f)
-                st = stress_at(trial, zin, f, z0)
+                st = stress_at(trial, zl, f, z0)
                 for el, rec in zip(trial, st["elements"]):
                     r, _ = _el_ratio(el, rec["v"] * spk, rec["i"] * spk, rec["p"] * p_therm)
                     if r is not None and r > rmax:

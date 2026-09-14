@@ -154,19 +154,33 @@ const RF = (() => {
     return [ext(A, B), ext(C, D)];
   }
 
-  function stressAt(chain, zin, f, z0) {
+  // 统一有损模型 (与 rf.py 同构): 级联含 Q/线损的 ABCD 求输入阻抗,
+  // 再以 1W 可用功率自源端向负载逐段反推 V/I; 阻抗/电压/电流/损耗/送达功率同一模型
+  function stressAt(chain, zl, f, z0) {
+    const abcds = chain.map(el => elAbcd(el, f));
+    let A = { r: 1, i: 0 }, B = { r: 0, i: 0 }, C = { r: 0, i: 0 }, D = { r: 1, i: 0 };
+    for (const m of abcds) {   // T = M_{n-1} … M_0
+      const nA = cadd(cmul(m.a, A), cmul(m.b, C));
+      const nB = cadd(cmul(m.a, B), cmul(m.b, D));
+      const nC = cadd(cmul(m.c, A), cmul(m.d, C));
+      const nD = cadd(cmul(m.c, B), cmul(m.d, D));
+      A = nA; B = nB; C = nC; D = nD;
+    }
+    const denom = cadd(cmul(C, zl), D);
+    const zin = cabs(denom) < 1e-30 ? { r: 1e30, i: 0 }
+      : cdiv(cadd(cmul(A, zl), B), denom);
     const m = metrics(zin, z0);
     const pIn = Math.max(1 - m.s11 * m.s11, 0);
     const elements = chain.map(el => ({ uid: el.uid, kind: el.kind, v: 0, i: 0, p: 0 }));
     const nodes = chain.map(() => ({ v: { r: 0, i: 0 }, i: { r: 0, i: 0 } }));
     nodes.push({ v: { r: 0, i: 0 }, i: { r: 0, i: 0 } });
-    if (pIn <= 0 || zin.r <= 1e-9) return { pIn: 0, pLoad: 0, elements, nodes };
+    if (pIn <= 0 || zin.r <= 1e-9) return { pIn: 0, pLoad: 0, zin, elements, nodes };
     let i = { r: Math.sqrt(pIn / zin.r), i: 0 };
     let v = cmul(i, zin);
     nodes[chain.length] = { v, i };
     for (let k = chain.length - 1; k >= 0; k--) {
       const el = chain[k];
-      const { a, b, c, d } = elAbcd(el, f);
+      const { a, b, c, d } = abcds[k];
       const v2 = csub(cmul(d, v), cmul(b, i));
       const i2 = csub(cmul(a, i), cmul(c, v));
       const diss = Math.max(cmul(v, cconj(i)).r - cmul(v2, cconj(i2)).r, 0);
@@ -179,7 +193,7 @@ const RF = (() => {
       v = v2; i = i2;
       nodes[k] = { v, i };
     }
-    return { pIn, pLoad: Math.max(cmul(v, cconj(i)).r, 0), elements, nodes };
+    return { pIn, pLoad: Math.max(cmul(v, cconj(i)).r, 0), zin, elements, nodes };
   }
 
   function elRatio(el, v, i, p) {
@@ -204,8 +218,7 @@ const RF = (() => {
     const rows = [];
     for (const f of freqs) {
       const zl = loadAt(cfg.samples, f);
-      const zin = chainInput(zl, chain, f);
-      const st = stressAt(chain, zin, f, cfg.z0);
+      const st = stressAt(chain, zl, f, cfg.z0);
       const inBand = f >= b1 - 1e-6 && f <= b2 + 1e-6;
       const recs = chain.map((el, k) => {
         const s = st.elements[k];

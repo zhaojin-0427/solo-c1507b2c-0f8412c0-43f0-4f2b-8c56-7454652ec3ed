@@ -122,7 +122,8 @@ label { font-size: 11px; color: var(--dim); display: flex; flex-direction: colum
 }
 .cand-row:hover { background: var(--panel2); }
 .cand-row.active { background: #142b44; }
-.cand-row .lab { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cand-row .lab { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.cand-row .lab:hover { color: var(--accent); }
 .cand-row .metric { font-family: var(--mono); color: var(--dim); font-size: 10.5px; text-align: right; }
 .cand-row .metric b { color: var(--text); }
 .cand-row.bad .metric b { color: var(--red); }

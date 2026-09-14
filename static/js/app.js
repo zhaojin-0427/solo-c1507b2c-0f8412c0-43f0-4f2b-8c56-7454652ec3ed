@@ -296,10 +296,9 @@
     const chain = effectiveChain();
     const zl = RF.loadAt(state.samples, fHz);
     const steps = RF.chainInput(zl, chain, fHz, true);
-    const zin = steps[steps.length - 1].z;
     const z0 = state.cfg.z0;
-    // 该频点逐段应力 (V/I 峰值包络级, 损耗热平均级)
-    const st = RF.stressAt(chain, zin, fHz, z0);
+    // 该频点逐段应力 (统一有损模型; V/I 峰值包络级, 损耗热平均级)
+    const st = RF.stressAt(chain, zl, fHz, z0);
     const pPeak = state.power.p_w * Math.pow(10, state.power.par_db / 10);
     const pTherm = state.power.p_w * state.power.duty;
     const spk = Math.sqrt(Math.max(pPeak, 0));
@@ -622,7 +621,7 @@
       return `<div class="cand-row ${ok ? 'ok' : 'bad'} ${state.activeCand === c.id ? 'active' : ''}"
           data-id="${c.id}">
         <input type="checkbox" class="ov" data-id="${c.id}" ${state.overlays.has(c.id) ? 'checked' : ''} title="叠加显示">
-        <span class="lab" title="${c.label}">${c.rank}. ${c.label}</span>
+        <span class="lab" title="${c.label} · 点击载入此方案">${c.rank}. ${c.label}</span>
         <span class="metric"><b>${c.worst_vswr.toFixed(2)}</b>${stBadge}<br>BW ${bwPct >= 99.9 ? '≥100' : bwPct.toFixed(0)}% · ${c.count}件${c.stub_len ? ' · 支' + c.stub_len.toFixed(2) + 'm' : ''}</span>
         <button class="btn btn-small apply" data-id="${c.id}">载入</button>
       </div>`;
@@ -633,9 +632,9 @@
       scheduleRecompute();
     }));
     box.querySelectorAll('.apply').forEach(b => b.addEventListener('click', () => applyCandidate(b.dataset.id)));
+    // 点击方案名称 = 直接载入 (完整重算 + 选中频点联动)
     box.querySelectorAll('.lab').forEach(el => el.addEventListener('click', () => {
-      state.activeCand = state.activeCand === el.parentElement.dataset.id ? null : el.parentElement.dataset.id;
-      renderCandidates();
+      applyCandidate(el.parentElement.dataset.id);
     }));
   }
 
